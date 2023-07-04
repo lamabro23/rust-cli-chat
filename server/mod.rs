@@ -91,9 +91,11 @@ async fn handle_client(
                     break;
                 }
                 let msg = String::from_utf8_lossy(&buffer[..n]).to_string();
+                println!("1: Sending message to client: {}", msg);
                 send_message(addr, clients.clone(), msg).await?;
             }
             Some(msg) = receiver.recv() => {
+                println!("2: Sending message to client: {}", msg);
                 stream.write_all(msg.as_bytes()).await?;
             }
         };

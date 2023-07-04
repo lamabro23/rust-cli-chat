@@ -12,6 +12,14 @@ fn request_username() -> String {
     username.trim().to_string()
 }
 
+async fn wait_for_message() -> String {
+    let mut message = String::new();
+    std::io::stdin()
+        .read_line(&mut message)
+        .expect("Failed to read line");
+    message.trim().to_string()
+}
+
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     // let username = request_username();
@@ -20,12 +28,22 @@ async fn main() -> std::io::Result<()> {
     let mut stream = TcpStream::connect("127.0.0.1:8080").await?;
     let (reader, mut writer) = stream.split();
 
-    let mut buffer = Cursor::new(username);
+    let mut buffer = Cursor::new(username.clone());
     writer.write_all_buf(&mut buffer).await?;
     writer.flush().await?;
 
     loop {
+        println!("Please enter a message.");
+        let message = wait_for_message().await;
+        if !message.is_empty() {
+            println!("sending message: {}", message);
+            let mut buffer = Cursor::new(message);
+            writer.write_all_buf(&mut buffer).await?;
+            writer.flush().await?;
+        }
+        println!("waiting for message...");
         reader.readable().await?;
+        println!("message received!");
 
         let mut buf = Vec::with_capacity(1024);
 
