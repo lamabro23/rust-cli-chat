@@ -4,35 +4,33 @@ use std::{
 };
 
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::mpsc::{channel, Receiver, Sender},
 };
 
-async fn assign_username(stream: &mut TcpStream) -> Result<String, Box<dyn std::error::Error>> {
+async fn assign_username<R: AsyncRead + Unpin>(
+    stream: &mut R,
+    addr: SocketAddr,
+    clients: Arc<Mutex<Vec<Client>>>,
+) -> Result<String, Box<dyn std::error::Error>> {
     let mut buffer = [0; 1024];
     let n = stream.read(&mut buffer).await?;
-    let username = String::from_utf8_lossy(&buffer[..n]).to_string();
-    Ok(username)
-}
-
-async fn handle_initial_connection(
-    addr: SocketAddr,
-    stream: &mut TcpStream,
-    clients: Arc<Mutex<Vec<Client>>>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let username = assign_username(stream).await?;
-    let welcome_msg = format!("{} has joined the chat!", username);
-    clients
-        .lock()
-        .unwrap()
-        .iter_mut()
-        .find(|c| c.addr == addr)
-        .unwrap()
-        .set_username(username);
-    println!("{}", welcome_msg);
-    send_message(addr, clients, welcome_msg).await?;
-    Ok(())
+    let username = String::from_utf8_lossy(&buffer[..n]).trim().to_string();
+    match username.is_empty() {
+        // TODO: Send response to the client
+        true => Err("Username cannot be empty.".into()),
+        false => {
+            clients
+                .lock()
+                .unwrap()
+                .iter_mut()
+                .find(|c| c.addr == addr)
+                .unwrap()
+                .set_username(username.clone());
+            Ok(username)
+        }
+    }
 }
 
 async fn send_message(
@@ -51,6 +49,18 @@ async fn send_message(
             });
         }
     }
+    Ok(())
+}
+
+async fn handle_client_connect(
+    addr: SocketAddr,
+    stream: &mut TcpStream,
+    clients: Arc<Mutex<Vec<Client>>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let username = assign_username(stream, addr, Arc::clone(&clients)).await?;
+    let msg = format!("{} has joined the chat!", username);
+    println!("{}", msg);
+    send_message(addr, clients, msg).await?;
     Ok(())
 }
 
@@ -80,7 +90,7 @@ async fn handle_client(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut buffer = [0; 1024];
 
-    handle_initial_connection(addr, &mut stream, clients.clone()).await?;
+    handle_client_connect(addr, &mut stream, clients.clone()).await?;
 
     loop {
         tokio::select! {
@@ -142,5 +152,43 @@ impl Client {
 
     fn set_username(&mut self, username: String) {
         self.username = username;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_assign_username_success() {
+        let input = b"mytestusername\n";
+        let mut reader = Cursor::new(input);
+        let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
+        let clients: Arc<Mutex<Vec<Client>>> = Arc::new(Mutex::new(vec![Client::new(
+            addr,
+            channel::<String>(100).0,
+        )]));
+
+        let username = assign_username(&mut reader, addr, clients).await;
+
+        assert!(username.is_ok());
+        assert_eq!(username.unwrap(), "mytestusername");
+    }
+
+    #[tokio::test]
+    async fn test_assign_username_empty() {
+        let input = b"\n";
+        let mut reader = Cursor::new(input);
+        let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
+        let clients: Arc<Mutex<Vec<Client>>> = Arc::new(Mutex::new(vec![Client::new(
+            addr,
+            channel::<String>(100).0,
+        )]));
+
+        let username = assign_username(&mut reader, addr, clients).await;
+
+        assert!(username.is_err());
     }
 }
