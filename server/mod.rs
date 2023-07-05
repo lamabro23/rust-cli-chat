@@ -6,8 +6,12 @@ use std::{
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    sync::mpsc::{channel, Receiver, Sender},
+    sync::mpsc::{channel, Receiver},
 };
+
+mod structs;
+
+use structs::client::Client;
 
 async fn assign_username<R: AsyncRead + Unpin>(
     stream: &mut R,
@@ -25,7 +29,7 @@ async fn assign_username<R: AsyncRead + Unpin>(
                 .lock()
                 .unwrap()
                 .iter_mut()
-                .find(|c| c.addr == addr)
+                .find(|c| c.addr_eq(addr))
                 .unwrap()
                 .set_username(username.clone());
             Ok(username)
@@ -39,11 +43,11 @@ async fn send_message(
     msg: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     for client in clients.lock().unwrap().iter() {
-        if client.addr != addr {
+        if !client.addr_eq(addr) {
             let client = client.clone();
             let msg = msg.clone();
             tokio::spawn(async move {
-                if let Err(e) = client.sender.send(msg).await {
+                if let Err(e) = client.get_sender().send(msg).await {
                     println!("Error sending message to client: {}", e);
                 }
             });
@@ -72,9 +76,9 @@ async fn handle_client_disconnect(
         .lock()
         .unwrap()
         .iter()
-        .find(|c| c.addr == addr)
+        .find(|c| c.addr_eq(addr))
         .unwrap()
-        .username
+        .get_username()
         .clone();
     let msg = format!("{} has left the chat!", username);
     println!("{}", msg);
@@ -97,7 +101,7 @@ async fn handle_client(
             Ok(n) = stream.read(&mut buffer) => {
                 if n == 0 {
                     handle_client_disconnect(addr, clients.clone()).await?;
-                    clients.lock().unwrap().retain(|c| c.addr != addr);
+                    clients.lock().unwrap().retain(|c| !c.addr_eq(addr));
                     break;
                 }
                 let msg = String::from_utf8_lossy(&buffer[..n]).to_string();
@@ -131,27 +135,6 @@ async fn main() -> std::io::Result<()> {
                 println!("Error handling client: {}", e);
             }
         });
-    }
-}
-
-#[derive(Clone, Debug)]
-struct Client {
-    username: String,
-    addr: SocketAddr,
-    sender: Sender<String>,
-}
-
-impl Client {
-    fn new(addr: SocketAddr, sender: Sender<String>) -> Self {
-        Self {
-            username: String::new(),
-            addr,
-            sender,
-        }
-    }
-
-    fn set_username(&mut self, username: String) {
-        self.username = username;
     }
 }
 
