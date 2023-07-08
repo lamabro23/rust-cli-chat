@@ -1,6 +1,6 @@
-use std::io::{self, BufRead, Cursor};
+use std::io::{self, stdin, BufRead, Cursor};
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 fn request_username<R: BufRead>(reader: &mut R) -> io::Result<String> {
@@ -18,45 +18,50 @@ fn request_username<R: BufRead>(reader: &mut R) -> io::Result<String> {
     }
 }
 
-async fn wait_for_message<R: BufRead>(reader: R) -> io::Result<String> {
-    let mut message = String::new();
-    let mut reader = reader;
-    reader.read_line(&mut message)?;
-    Ok(message.trim().to_string())
+async fn send_message<W>(writer: &mut W, message: String) -> io::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let mut buffer = Cursor::new(message);
+    writer.write_all_buf(&mut buffer).await?;
+    writer.flush().await?;
+    Ok(())
 }
 
 #[tokio::main]
-async fn main() -> std::io::Result<()> {
+async fn main() -> io::Result<()> {
     let username = request_username(&mut io::stdin().lock()).unwrap();
-    // let username = "test".to_string();
 
-    let mut stream = TcpStream::connect("127.0.0.1:8080").await?;
-    let (mut reader, mut writer) = stream.split();
+    let stream = TcpStream::connect("127.0.0.1:8080").await?;
+    let (mut reader, mut writer) = stream.into_split();
 
-    let mut buffer = Cursor::new(username.clone());
-    writer.write_all_buf(&mut buffer).await?;
-    writer.flush().await?;
+    send_message(&mut writer, username).await?;
 
-    loop {
-        let mut buffer = [0; 1024];
-        tokio::select! {
-            Ok(n) = reader.read(&mut buffer) => {
-                if n == 0 {
+    tokio::spawn(async move {
+        loop {
+            let mut buffer = vec![0; 1024];
+            match reader.read(&mut buffer).await {
+                Ok(n) if n > 0 => {
+                    let msg = String::from_utf8_lossy(&buffer).to_string();
+                    println!("{}", msg);
+                }
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => (),
+                Err(_) | Ok(0) => {
+                    println!("Connection with server was severed.");
                     break;
                 }
-                let msg = String::from_utf8_lossy(&buffer[..n]).to_string();
-                println!("{}", msg);
+                Ok(_) => (),
             }
-            _ = wait_for_message(io::stdin().lock()) => {
-                let msg = format!("{}: {:?}", username, buffer);
-                let mut buffer = Cursor::new(msg);
-                writer.write_all_buf(&mut buffer).await?;
-                writer.flush().await?;
-            }
-        };
-    }
+        }
+    });
 
-    Ok(())
+    loop {
+        let mut buff = String::new();
+        stdin()
+            .read_line(&mut buff)
+            .expect("Reading from stdin failed!");
+        send_message(&mut writer, buff).await?;
+    }
 }
 
 #[cfg(test)]
@@ -103,15 +108,5 @@ mod client_tests {
         let result = request_username(&mut reader);
 
         assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_wait_for_message() {
-        let input = b"mytestmessage\n";
-        let reader = Cursor::new(input);
-
-        let message = wait_for_message(reader).await.unwrap();
-
-        assert_eq!(message, "mytestmessage");
     }
 }
