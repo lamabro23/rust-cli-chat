@@ -1,4 +1,5 @@
 use std::{
+    io::Cursor,
     net::SocketAddr,
     sync::{Arc, Mutex},
 };
@@ -13,25 +14,27 @@ mod structs;
 
 use structs::client::Client;
 
-async fn assign_username<R: AsyncRead + Unpin>(
+async fn assign_username<R>(
     stream: &mut R,
     addr: SocketAddr,
     clients: Arc<Mutex<Vec<Client>>>,
-) -> Result<String, Box<dyn std::error::Error>> {
+) -> Result<String, Box<dyn std::error::Error>>
+where
+    R: AsyncRead + Unpin,
+{
     let mut buffer = [0; 1024];
     let n = stream.read(&mut buffer).await?;
     let username = String::from_utf8_lossy(&buffer[..n]).trim().to_string();
     match username.is_empty() {
-        // TODO: Send response to the client
         true => Err("Username cannot be empty.".into()),
         false => {
-            clients
-                .lock()
-                .unwrap()
-                .iter_mut()
-                .find(|c| c.addr_eq(addr))
-                .unwrap()
-                .set_username(username.clone());
+            match clients.lock() {
+                Ok(mut clients) => match clients.iter_mut().find(|c| c.addr_eq(addr)) {
+                    Some(client) => client.set_username(username.clone()),
+                    None => return Err("Client not found.".into()),
+                },
+                Err(_) => return Err("Error locking clients.".into()),
+            };
             Ok(username)
         }
     }
@@ -42,17 +45,20 @@ async fn send_message(
     clients: Arc<Mutex<Vec<Client>>>,
     msg: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    for client in clients.lock().unwrap().iter() {
-        if !client.addr_eq(addr) {
-            let client = client.clone();
+    clients
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|c| !c.addr_eq(addr))
+        .for_each(|c| {
+            let client = c.clone();
             let msg = msg.clone();
             tokio::spawn(async move {
                 if let Err(e) = client.get_sender().send(msg).await {
                     println!("Error sending message to client: {}", e);
                 }
             });
-        }
-    }
+        });
     Ok(())
 }
 
@@ -82,7 +88,8 @@ async fn handle_client_disconnect(
         .clone();
     let msg = format!("{} has left the chat!", username);
     println!("{}", msg);
-    send_message(addr, clients, msg).await?;
+    send_message(addr, Arc::clone(&clients), msg).await?;
+    clients.lock().unwrap().retain(|c| !c.addr_eq(addr));
     Ok(())
 }
 
@@ -94,23 +101,22 @@ async fn handle_client(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut buffer = [0; 1024];
 
-    handle_client_connect(addr, &mut stream, clients.clone()).await?;
+    handle_client_connect(addr, &mut stream, Arc::clone(&clients)).await?;
 
     loop {
         tokio::select! {
             Ok(n) = stream.read(&mut buffer) => {
                 if n == 0 {
-                    handle_client_disconnect(addr, clients.clone()).await?;
-                    clients.lock().unwrap().retain(|c| !c.addr_eq(addr));
+                    handle_client_disconnect(addr, Arc::clone(&clients)).await?;
                     break;
                 }
                 let msg = String::from_utf8_lossy(&buffer[..n]).to_string();
-                println!("1: Sending message to client: {}", msg);
+                println!("Message to be send to other threads: {}", msg.trim());
                 send_message(addr, clients.clone(), msg).await?;
             }
             Some(msg) = receiver.recv() => {
-                println!("2: Sending message to client: {}", msg);
-                stream.write_all(msg.as_bytes()).await?;
+                println!("Message to be send to client: {}", msg.trim());
+                stream.write_all_buf(&mut Cursor::new(msg.trim())).await?;
             }
         };
     }
@@ -131,8 +137,9 @@ async fn main() -> std::io::Result<()> {
         clients.lock().unwrap().push(Client::new(addr, sender));
 
         tokio::spawn(async move {
-            if let Err(e) = handle_client(stream, addr, clients, reciever).await {
+            if let Err(e) = handle_client(stream, addr, Arc::clone(&clients), reciever).await {
                 println!("Error handling client: {}", e);
+                clients.lock().unwrap().retain(|c| !c.addr_eq(addr));
             }
         });
     }
@@ -154,10 +161,18 @@ mod tests {
             channel::<String>(100).0,
         )]));
 
-        let username = assign_username(&mut reader, addr, clients).await;
+        let username = assign_username(&mut reader, addr, Arc::clone(&clients)).await;
+        let client = clients
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|c| c.addr_eq(addr))
+            .unwrap()
+            .clone();
 
         assert!(username.is_ok());
         assert_eq!(username.unwrap(), "mytestusername");
+        assert_eq!(client.get_username(), "mytestusername");
     }
 
     #[tokio::test]
@@ -173,5 +188,19 @@ mod tests {
         let username = assign_username(&mut reader, addr, clients).await;
 
         assert!(username.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_clients_len_after_client_disconnect() {
+        let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
+        let clients: Arc<Mutex<Vec<Client>>> = Arc::new(Mutex::new(vec![Client::new(
+            addr,
+            channel::<String>(100).0,
+        )]));
+
+        let result = handle_client_disconnect(addr, Arc::clone(&clients)).await;
+
+        assert!(result.is_ok());
+        assert_eq!(clients.lock().unwrap().len(), 0);
     }
 }
