@@ -110,9 +110,9 @@ async fn handle_client(
                     handle_client_disconnect(addr, Arc::clone(&clients)).await?;
                     break;
                 }
+                let username = clients.lock().unwrap().iter().find(|c| c.addr_eq(addr)).unwrap().get_username().clone();
                 let msg = String::from_utf8_lossy(&buffer[..n]).to_string();
-                println!("Message to be send to other threads: {}", msg.trim());
-                send_message(addr, clients.clone(), msg).await?;
+                send_message(addr, clients.clone(), format!("{}: {}", username, msg)).await?;
             }
             Some(msg) = receiver.recv() => {
                 println!("Message to be send to client: {}", msg.trim());

@@ -26,10 +26,6 @@ impl Client {
         &self.username
     }
 
-    pub(crate) fn get_addr(&self) -> &SocketAddr {
-        &self.addr
-    }
-
     pub(crate) fn get_sender(&self) -> &Sender<String> {
         &self.sender
     }
