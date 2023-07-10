@@ -12,4 +12,4 @@ name = "client"
 path = "client/mod.rs"
 
 [dependencies]
-tokio = { version = "1.29.0", features = ["net", "rt", "macros", "rt-multi-thread", "io-util", "sync"] }
+tokio = { version = "1.29.0", features = ["net", "rt", "macros", "rt-multi-thread", "io-util", "sync", "io-std"] }
