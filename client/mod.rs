@@ -1,6 +1,7 @@
 use std::io::{self, stdin, BufRead, Cursor};
 
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 
 fn request_username<R: BufRead>(reader: &mut R) -> io::Result<String> {
@@ -28,33 +29,7 @@ where
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> io::Result<()> {
-    let username = request_username(&mut io::stdin().lock()).unwrap();
-
-    let stream = TcpStream::connect("127.0.0.1:8080").await?;
-    let (mut reader, mut writer) = stream.into_split();
-
-    send_message(&mut writer, username).await?;
-
-    tokio::spawn(async move {
-        loop {
-            let mut buffer = vec![0; 1024];
-            match reader.read(&mut buffer).await {
-                Ok(n) if n > 0 => {
-                    let msg = String::from_utf8_lossy(&buffer).to_string();
-                    println!("{}", msg);
-                }
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => (),
-                Err(_) | Ok(0) => {
-                    println!("Connection with server was severed.");
-                    break;
-                }
-                Ok(_) => (),
-            }
-        }
-    });
-
+async fn send_user_messages(mut writer: OwnedWriteHalf) -> io::Result<()> {
     loop {
         let mut buff = String::new();
         stdin()
@@ -62,6 +37,53 @@ async fn main() -> io::Result<()> {
             .expect("Reading from stdin failed!");
         send_message(&mut writer, buff).await?;
     }
+}
+
+async fn receive_server_messages(mut reader: OwnedReadHalf) -> io::Result<()> {
+    loop {
+        let mut buffer = vec![0; 1024];
+        match reader.read(&mut buffer).await {
+            Ok(n) if n > 0 => {
+                let msg = String::from_utf8_lossy(&buffer).to_string();
+                println!("{}", msg);
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => (),
+            Err(_) | Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    "Connection with server was severed.",
+                ));
+            }
+            Ok(_) => (),
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    let stream = TcpStream::connect("127.0.0.1:8080").await?;
+    let (reader, mut writer) = stream.into_split();
+
+    let username = match request_username(&mut io::stdin().lock()) {
+        Ok(result) => result,
+        Err(e) => {
+            eprintln!("{}", e);
+            return Ok(());
+        }
+    };
+
+    send_message(&mut writer, username).await?;
+
+    tokio::spawn(async move {
+        match receive_server_messages(reader).await {
+            Ok(_) => (),
+            Err(e) => eprintln!("{}", e),
+        }
+    });
+
+    send_user_messages(writer).await?;
+
+    Ok(())
 }
 
 #[cfg(test)]
