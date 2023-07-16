@@ -1,5 +1,7 @@
+use std::env;
 use std::io::{self, stdin, BufRead, Cursor};
 
+use dotenv::dotenv;
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
@@ -61,7 +63,10 @@ async fn receive_server_messages(mut reader: OwnedReadHalf) -> io::Result<()> {
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let stream = TcpStream::connect("127.0.0.1:8080").await?;
+    dotenv().ok();
+    let port = env::var("SERVER_PORT").unwrap_or_else(|_| "8080".to_string());
+
+    let stream = TcpStream::connect(format!("127.0.0.1:{}", port)).await?;
     let (reader, mut writer) = stream.into_split();
 
     let username = match request_username(&mut io::stdin().lock()) {

@@ -1,4 +1,6 @@
+use dotenv::dotenv;
 use std::{
+    env,
     io::Cursor,
     net::SocketAddr,
     sync::{Arc, Mutex},
@@ -126,7 +128,10 @@ async fn handle_client(
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    let listener = TcpListener::bind("127.0.0.1:8080").await?;
+    dotenv().ok();
+    let port = env::var("SERVER_PORT").unwrap_or_else(|_| "8080".to_string());
+
+    let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).await?;
     let clients: Arc<Mutex<Vec<Client>>> = Arc::new(Mutex::new(Vec::new()));
 
     loop {
